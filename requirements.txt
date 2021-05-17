@@ -1,0 +1,2 @@
+awesome-pattern-matching>=0.21.2
+PyYAML>=5.4.1 
