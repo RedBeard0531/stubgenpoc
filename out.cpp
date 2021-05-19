@@ -78,11 +78,11 @@ Napi::Value nodeFrom_ObjectSchema(Napi::Env env, const ObjectSchema& obj);
 RealmConfig nodeTo_RealmConfig(Napi::Env env, Napi::Value val);
 Napi::Value nodeFrom_RealmConfig(Napi::Env env, const RealmConfig& obj);
 const std::shared_ptr<Transaction>& NODE_TO_SHARED_Transaction(Napi::Value val);
-Napi::Value NODE_FROM_SHARED_Transaction(Napi::Env env, const std::shared_ptr<Transaction>& ptr);
-const ObjectStore& NODE_TO_SHARED_ObjectStore(Napi::Value val);
-Napi::Value NODE_FROM_SHARED_ObjectStore(Napi::Env env, const ObjectStore& val);
+Napi::Value NODE_FROM_SHARED_Transaction(Napi::Env env, std::shared_ptr<Transaction> ptr);
+const ObjectStore& NODE_TO_CLASS_ObjectStore(Napi::Value val);
+Napi::Value NODE_FROM_CLASS_ObjectStore(Napi::Env env, ObjectStore val);
 const std::shared_ptr<Realm>& NODE_TO_SHARED_Realm(Napi::Value val);
-Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, const std::shared_ptr<Realm>& ptr);
+Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, std::shared_ptr<Realm> ptr);
 Napi::Object moduleInit(Napi::Env env, Napi::Object exports);
 const std::unordered_map<std::string_view, int> strToEnum_SchemaMode = {
     {"Automatic", 0}, {"Immutable", 1},          {"ReadOnlyAlternative", 2},
@@ -171,7 +171,7 @@ Node_Transaction::Node_Transaction(const Napi::CallbackInfo& info)
     auto env = info.Env();
     if (info.Length() != 1 || !info[0].IsExternal())
         throw Napi::TypeError::New(env, "need 1 external argument");
-    m_ptr = std::as_const(*info[0].As<Napi::External<std::shared_ptr<Transaction>>>().Data());
+    m_ptr = std::move(*info[0].As<Napi::External<std::shared_ptr<Transaction>>>().Data());
 }
 Napi::Function Node_Transaction::init(Napi::Env env, Napi::Object exports)
 {
@@ -187,7 +187,7 @@ Node_ObjectStore::Node_ObjectStore(const Napi::CallbackInfo& info)
     auto env = info.Env();
     if (info.Length() != 1 || !info[0].IsExternal())
         throw Napi::TypeError::New(env, "need 1 external argument");
-    m_val = std::as_const(*info[0].As<Napi::External<ObjectStore>>().Data());
+    m_val = std::move(*info[0].As<Napi::External<ObjectStore>>().Data());
 }
 Napi::Value Node_ObjectStore::meth_get_schema_version(const Napi::CallbackInfo& info)
 {
@@ -242,7 +242,7 @@ Node_Realm::Node_Realm(const Napi::CallbackInfo& info)
     auto env = info.Env();
     if (info.Length() != 1 || !info[0].IsExternal())
         throw Napi::TypeError::New(env, "need 1 external argument");
-    m_ptr = std::as_const(*info[0].As<Napi::External<std::shared_ptr<Realm>>>().Data());
+    m_ptr = std::move(*info[0].As<Napi::External<std::shared_ptr<Realm>>>().Data());
 }
 Napi::Value Node_Realm::meth_begin_transaction(const Napi::CallbackInfo& info)
 {
@@ -1057,27 +1057,25 @@ const std::shared_ptr<Transaction>& NODE_TO_SHARED_Transaction(Napi::Value val)
 {
     return Node_Transaction::Unwrap(val.ToObject())->m_ptr;
 }
-Napi::Value NODE_FROM_SHARED_Transaction(Napi::Env env, const std::shared_ptr<Transaction>& ptr)
+Napi::Value NODE_FROM_SHARED_Transaction(Napi::Env env, std::shared_ptr<Transaction> ptr)
 {
-    return Node_Transaction::ctor.New(
-        {Napi::External<std::shared_ptr<Transaction>>::New(env, const_cast<std::shared_ptr<Transaction>*>(&ptr))});
+    return Node_Transaction::ctor.New({Napi::External<std::shared_ptr<Transaction>>::New(env, &ptr)});
 }
-const ObjectStore& NODE_TO_SHARED_ObjectStore(Napi::Value val)
+const ObjectStore& NODE_TO_CLASS_ObjectStore(Napi::Value val)
 {
     return Node_ObjectStore::Unwrap(val.ToObject())->m_val;
 }
-Napi::Value NODE_FROM_SHARED_ObjectStore(Napi::Env env, const ObjectStore& val)
+Napi::Value NODE_FROM_CLASS_ObjectStore(Napi::Env env, ObjectStore val)
 {
-    return Node_ObjectStore::ctor.New({Napi::External<ObjectStore>::New(env, const_cast<ObjectStore*>(&val))});
+    return Node_ObjectStore::ctor.New({Napi::External<ObjectStore>::New(env, &val)});
 }
 const std::shared_ptr<Realm>& NODE_TO_SHARED_Realm(Napi::Value val)
 {
     return Node_Realm::Unwrap(val.ToObject())->m_ptr;
 }
-Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, const std::shared_ptr<Realm>& ptr)
+Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, std::shared_ptr<Realm> ptr)
 {
-    return Node_Realm::ctor.New(
-        {Napi::External<std::shared_ptr<Realm>>::New(env, const_cast<std::shared_ptr<Realm>*>(&ptr))});
+    return Node_Realm::ctor.New({Napi::External<std::shared_ptr<Realm>>::New(env, &ptr)});
 }
 Napi::Object moduleInit(Napi::Env env, Napi::Object exports)
 {

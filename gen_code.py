@@ -469,41 +469,8 @@ for cls in syms.classes:
         mem_inits = [CppMemInit(f'Napi::ObjectWrap<{cpp_cls.name}>', 'info')]))
 
     if cls.shared_ptr_wrapped:
-        ptr = f'std::shared_ptr<{cls.name}>'
-        free_funcs.append(CppFunc(
-            f'NODE_TO_SHARED_{cls.name}',
-            f'const {ptr}&',
-            [CppVar('Napi::Value', 'val')],
-            body = dedent(f'''
-                return {cpp_cls.name}::Unwrap(val.ToObject())->m_ptr;
-            '''),
-        ))
-        free_funcs.append(CppFunc(
-            f'NODE_FROM_SHARED_{cls.name}',
-            'Napi::Value',
-            [CppVar('Napi::Env', 'env'), CppVar(f'const {ptr}&', 'ptr')],
-            body = dedent(f'''
-                return {cpp_cls.name}::ctor.New({{Napi::External<{ptr}>::New(env, const_cast<{ptr}*>(&ptr))}});
-            '''),
-        ))
         obj = '(*m_ptr)'
     else:
-        free_funcs.append(CppFunc(
-            f'NODE_TO_SHARED_{cls.name}',
-            f'const {cls.name}&',
-            [CppVar('Napi::Value', 'val')],
-            body = dedent(f'''
-                return {cpp_cls.name}::Unwrap(val.ToObject())->m_val;
-            '''),
-        ))
-        free_funcs.append(CppFunc(
-            f'NODE_FROM_SHARED_{cls.name}',
-            'Napi::Value',
-            [CppVar('Napi::Env', 'env'), CppVar(f'const {cls.name}&', 'val')],
-            body = dedent(f'''
-                return {cpp_cls.name}::ctor.New({{Napi::External<{cls.name}>::New(env, const_cast<{cls.name}*>(&val))}});
-            '''),
-        ))
         obj = '(m_val)'
 
 
@@ -552,11 +519,46 @@ for cls in syms.classes:
     ''')
 
     if cls.shared_ptr_wrapped:
+        ptr = f'std::shared_ptr<{cls.name}>'
         cpp_cls.members.append(CppVar(ptr, 'm_ptr'))
-        ctor.body += f'm_ptr = std::as_const(*info[0].As<Napi::External<{ptr}>>().Data());'
+        ctor.body += f'm_ptr = std::move(*info[0].As<Napi::External<{ptr}>>().Data());'
+
+        free_funcs.append(CppFunc(
+            f'NODE_TO_SHARED_{cls.name}',
+            f'const {ptr}&',
+            [CppVar('Napi::Value', 'val')],
+            body = dedent(f'''
+                return {cpp_cls.name}::Unwrap(val.ToObject())->m_ptr;
+            '''),
+        ))
+        free_funcs.append(CppFunc(
+            f'NODE_FROM_SHARED_{cls.name}',
+            'Napi::Value',
+            [CppVar('Napi::Env', 'env'), CppVar(ptr, 'ptr')],
+            body = dedent(f'''
+                return {cpp_cls.name}::ctor.New({{Napi::External<{ptr}>::New(env, &ptr)}});
+            '''),
+        ))
     else:
         cpp_cls.members.append(CppVar(cls.name, 'm_val'))
-        ctor.body += f'm_val = std::as_const(*info[0].As<Napi::External<{cls.name}>>().Data());'
+        ctor.body += f'm_val = std::move(*info[0].As<Napi::External<{cls.name}>>().Data());'
+
+        free_funcs.append(CppFunc(
+            f'NODE_TO_CLASS_{cls.name}',
+            f'const {cls.name}&',
+            [CppVar('Napi::Value', 'val')],
+            body = dedent(f'''
+                return {cpp_cls.name}::Unwrap(val.ToObject())->m_val;
+            '''),
+        ))
+        free_funcs.append(CppFunc(
+            f'NODE_FROM_CLASS_{cls.name}',
+            'Napi::Value',
+            [CppVar('Napi::Env', 'env'), CppVar(cls.name, 'val')],
+            body = dedent(f'''
+                return {cpp_cls.name}::ctor.New({{Napi::External<{cls.name}>::New(env, &val)}});
+            '''),
+        ))
 
     init = cpp_cls.addMethod(CppMethod(
         'init',
