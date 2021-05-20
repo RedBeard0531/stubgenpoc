@@ -25,6 +25,7 @@ type_aliases:
 templates:
   - util::Optional
   - std::vector
+  - std::shared_ptr
 
 enums:
   SchemaMode:
@@ -223,7 +224,7 @@ classes:
       auto_refresh: bool
 
       can_deliver_notifications: bool
-      #scheduler: std::shared_ptr<util::Scheduler>
+      scheduler: std::shared_ptr<Scheduler>
       
       is_closed: bool
 
@@ -263,3 +264,15 @@ classes:
 
       file_format_upgraded_from_version: () const -> util::Optional<int>
 
+interfaces:
+  Scheduler:
+    methods:
+      notify: ()
+      is_on_thread: () const noexcept -> bool
+      is_same_as: '(other: std::shared_ptr<Scheduler> const&) const noexcept -> bool'
+      can_deliver_notifications: () const noexcept -> bool
+      set_notify_callback: '(callback: () -> void) noexcept'
+    staticMethods:
+      get_frozen: '(version: VersionID) -> std::shared_ptr<Scheduler>'
+      make_default: '() -> std::shared_ptr<Scheduler>'
+      set_default_factory: '(factory: () -> std::shared_ptr<Scheduler>)'

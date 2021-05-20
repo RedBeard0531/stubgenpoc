@@ -11,6 +11,7 @@
 #include "realm/object-store/util/scheduler.hpp"
 namespace realm::js::node {
 using RealmConfig = Realm::Config;
+using Scheduler = util::Scheduler;
 
 namespace {
 auto scheduler_queue = std::queue<std::function<void()>>();
@@ -59,6 +60,8 @@ Ret run_blocking_on_main_thread(F&& f)
 class Node_Transaction;
 class Node_ObjectStore;
 class Node_Realm;
+class Node_Scheduler;
+class Node_Impl_Scheduler;
 void makeNodeEnum_SchemaMode(Napi::Env env, Napi::Object exports);
 SchemaMode nodeTo_SchemaMode(Napi::Env env, Napi::Value val);
 Napi::Value nodeFrom_SchemaMode(Napi::Env env, SchemaMode val);
@@ -83,6 +86,9 @@ const ObjectStore& NODE_TO_CLASS_ObjectStore(Napi::Value val);
 Napi::Value NODE_FROM_CLASS_ObjectStore(Napi::Env env, ObjectStore val);
 const std::shared_ptr<Realm>& NODE_TO_SHARED_Realm(Napi::Value val);
 Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, std::shared_ptr<Realm> ptr);
+std::shared_ptr<Scheduler> NODE_TO_INTERFACE_Scheduler(Napi::Value val);
+const std::shared_ptr<Scheduler>& NODE_TO_SHARED_Scheduler(Napi::Value val);
+Napi::Value NODE_FROM_SHARED_Scheduler(Napi::Env env, std::shared_ptr<Scheduler> ptr);
 Napi::Object moduleInit(Napi::Env env, Napi::Object exports);
 const std::unordered_map<std::string_view, int> strToEnum_SchemaMode = {
     {"Automatic", 0}, {"Immutable", 1},          {"ReadOnlyAlternative", 2},
@@ -159,11 +165,39 @@ public:
     Napi::Value prop_current_transaction_version(const Napi::CallbackInfo& info);
     Napi::Value prop_auto_refresh(const Napi::CallbackInfo& info);
     Napi::Value prop_can_deliver_notifications(const Napi::CallbackInfo& info);
+    Napi::Value prop_scheduler(const Napi::CallbackInfo& info);
     Napi::Value prop_is_closed(const Napi::CallbackInfo& info);
     Napi::Value prop_audit_context(const Napi::CallbackInfo& info);
     static Napi::Function init(Napi::Env env, Napi::Object exports);
     static Napi::FunctionReference ctor;
     std::shared_ptr<Realm> m_ptr;
+};
+
+class Node_Scheduler : public Napi::ObjectWrap<Node_Scheduler> {
+public:
+    Node_Scheduler(const Napi::CallbackInfo& info);
+    Napi::Value meth_notify(const Napi::CallbackInfo& info);
+    Napi::Value meth_is_on_thread(const Napi::CallbackInfo& info);
+    Napi::Value meth_is_same_as(const Napi::CallbackInfo& info);
+    Napi::Value meth_can_deliver_notifications(const Napi::CallbackInfo& info);
+    Napi::Value meth_set_notify_callback(const Napi::CallbackInfo& info);
+    static Napi::Value meth_get_frozen(const Napi::CallbackInfo& info);
+    static Napi::Value meth_make_default(const Napi::CallbackInfo& info);
+    static Napi::Value meth_set_default_factory(const Napi::CallbackInfo& info);
+    static Napi::Function init(Napi::Env env, Napi::Object exports);
+    static Napi::FunctionReference ctor;
+    std::shared_ptr<Scheduler> m_ptr;
+};
+
+class Node_Impl_Scheduler : public Scheduler {
+public:
+    Node_Impl_Scheduler(Napi::Value val);
+    void notify() override;
+    bool is_on_thread() const noexcept override;
+    bool is_same_as(std::shared_ptr<Scheduler> const& other) const noexcept override;
+    bool can_deliver_notifications() const noexcept override;
+    void set_notify_callback(std::function<void()> callback) noexcept override;
+    Napi::ObjectReference m_obj;
 };
 Node_Transaction::Node_Transaction(const Napi::CallbackInfo& info)
     : Napi::ObjectWrap<Node_Transaction>(info)
@@ -552,6 +586,12 @@ Napi::Value Node_Realm::prop_can_deliver_notifications(const Napi::CallbackInfo&
     auto&& val = (*m_ptr).can_deliver_notifications();
     return Napi::Boolean::New(env, val);
 }
+Napi::Value Node_Realm::prop_scheduler(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    auto&& val = (*m_ptr).scheduler();
+    return NODE_FROM_SHARED_Scheduler(env, val);
+}
 Napi::Value Node_Realm::prop_is_closed(const Napi::CallbackInfo& info)
 {
     auto env = info.Env();
@@ -605,12 +645,216 @@ Napi::Function Node_Realm::init(Napi::Env env, Napi::Object exports)
          InstanceAccessor<&Node_Realm::prop_current_transaction_version>("current_transaction_version"),
          InstanceAccessor<&Node_Realm::prop_auto_refresh>("auto_refresh"),
          InstanceAccessor<&Node_Realm::prop_can_deliver_notifications>("can_deliver_notifications"),
+         InstanceAccessor<&Node_Realm::prop_scheduler>("scheduler"),
          InstanceAccessor<&Node_Realm::prop_is_closed>("is_closed"),
          InstanceAccessor<&Node_Realm::prop_audit_context>("audit_context")});
     ctor = Napi::Persistent(func);
     ctor.SuppressDestruct();
     exports.Set("Realm", func);
     return func;
+}
+Node_Scheduler::Node_Scheduler(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<Node_Scheduler>(info)
+{
+    auto env = info.Env();
+    if (info.Length() != 1 || !info[0].IsExternal())
+        throw Napi::TypeError::New(env, "need 1 external argument");
+    m_ptr = std::move(*info[0].As<Napi::External<std::shared_ptr<Scheduler>>>().Data());
+}
+Napi::Value Node_Scheduler::meth_notify(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 0)
+        throw Napi::TypeError::New(env, "expected 0 arguments");
+
+    (*m_ptr).notify();
+    return env.Undefined();
+}
+Napi::Value Node_Scheduler::meth_is_on_thread(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 0)
+        throw Napi::TypeError::New(env, "expected 0 arguments");
+
+    auto&& val = (*m_ptr).is_on_thread();
+    return Napi::Boolean::New(env, val);
+}
+Napi::Value Node_Scheduler::meth_is_same_as(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 1)
+        throw Napi::TypeError::New(env, "expected 1 arguments");
+
+    auto&& val = (*m_ptr).is_same_as(NODE_TO_INTERFACE_Scheduler(info[0]));
+    return Napi::Boolean::New(env, val);
+}
+Napi::Value Node_Scheduler::meth_can_deliver_notifications(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 0)
+        throw Napi::TypeError::New(env, "expected 0 arguments");
+
+    auto&& val = (*m_ptr).can_deliver_notifications();
+    return Napi::Boolean::New(env, val);
+}
+Napi::Value Node_Scheduler::meth_set_notify_callback(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 1)
+        throw Napi::TypeError::New(env, "expected 1 arguments");
+
+    (*m_ptr).set_notify_callback(([&] {
+        if (!info[0].IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        return [func = std::make_shared<Napi::FunctionReference>(Napi::Persistent(info[0].As<Napi::Function>()))]() {
+            auto env = func->Env();
+            return run_blocking_on_main_thread([&]() -> void {
+                auto ret = func->MakeCallback(env.Undefined(), {
+
+                                                               });
+                return ((void)ret);
+            });
+        };
+    }()));
+    return env.Undefined();
+}
+Napi::Value Node_Scheduler::meth_get_frozen(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 1)
+        throw Napi::TypeError::New(env, "expected 1 arguments");
+
+    auto&& val = Scheduler::get_frozen(nodeTo_VersionID(env, info[0]));
+    return NODE_FROM_SHARED_Scheduler(env, val);
+}
+Napi::Value Node_Scheduler::meth_make_default(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 0)
+        throw Napi::TypeError::New(env, "expected 0 arguments");
+
+    auto&& val = Scheduler::make_default();
+    return NODE_FROM_SHARED_Scheduler(env, val);
+}
+Napi::Value Node_Scheduler::meth_set_default_factory(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (info.Length() != 1)
+        throw Napi::TypeError::New(env, "expected 1 arguments");
+
+    Scheduler::set_default_factory(([&] {
+        if (!info[0].IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        return [func = std::make_shared<Napi::FunctionReference>(Napi::Persistent(info[0].As<Napi::Function>()))]() {
+            auto env = func->Env();
+            return run_blocking_on_main_thread([&]() -> std::shared_ptr<Scheduler> {
+                auto ret = func->MakeCallback(env.Undefined(), {
+
+                                                               });
+                return NODE_TO_INTERFACE_Scheduler(ret);
+            });
+        };
+    }()));
+    return env.Undefined();
+}
+Napi::Function Node_Scheduler::init(Napi::Env env, Napi::Object exports)
+{
+    auto func =
+        DefineClass(env, "Scheduler",
+                    {InstanceMethod<&Node_Scheduler::meth_notify>("notify"),
+                     InstanceMethod<&Node_Scheduler::meth_is_on_thread>("is_on_thread"),
+                     InstanceMethod<&Node_Scheduler::meth_is_same_as>("is_same_as"),
+                     InstanceMethod<&Node_Scheduler::meth_can_deliver_notifications>("can_deliver_notifications"),
+                     InstanceMethod<&Node_Scheduler::meth_set_notify_callback>("set_notify_callback"),
+                     StaticMethod<&Node_Scheduler::meth_get_frozen>("get_frozen"),
+                     StaticMethod<&Node_Scheduler::meth_make_default>("make_default"),
+                     StaticMethod<&Node_Scheduler::meth_set_default_factory>("set_default_factory")});
+    ctor = Napi::Persistent(func);
+    ctor.SuppressDestruct();
+    exports.Set("Scheduler", func);
+    return func;
+}
+Node_Impl_Scheduler::Node_Impl_Scheduler(Napi::Value val)
+    : m_obj(Napi::Persistent(val.ToObject()))
+{
+}
+void Node_Impl_Scheduler::notify()
+{
+    auto env = m_obj.Env();
+    return run_blocking_on_main_thread([&]() -> void {
+        auto meth = m_obj.Get("notify");
+        if (!meth.IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        auto ret = meth.As<Napi::Function>().MakeCallback(m_obj.Value(), {
+
+                                                                         });
+        return ((void)ret);
+    });
+}
+bool Node_Impl_Scheduler::is_on_thread() const noexcept
+{
+    auto env = m_obj.Env();
+    return run_blocking_on_main_thread([&]() -> bool {
+        auto meth = m_obj.Get("is_on_thread");
+        if (!meth.IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        auto ret = meth.As<Napi::Function>().MakeCallback(m_obj.Value(), {
+
+                                                                         });
+        return ret.ToBoolean().Value();
+    });
+}
+bool Node_Impl_Scheduler::is_same_as(std::shared_ptr<Scheduler> const& other) const noexcept
+{
+    auto env = m_obj.Env();
+    return run_blocking_on_main_thread([&]() -> bool {
+        auto meth = m_obj.Get("is_same_as");
+        if (!meth.IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        auto ret = meth.As<Napi::Function>().MakeCallback(m_obj.Value(), {NODE_FROM_SHARED_Scheduler(env, other)});
+        return ret.ToBoolean().Value();
+    });
+}
+bool Node_Impl_Scheduler::can_deliver_notifications() const noexcept
+{
+    auto env = m_obj.Env();
+    return run_blocking_on_main_thread([&]() -> bool {
+        auto meth = m_obj.Get("can_deliver_notifications");
+        if (!meth.IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        auto ret = meth.As<Napi::Function>().MakeCallback(m_obj.Value(), {
+
+                                                                         });
+        return ret.ToBoolean().Value();
+    });
+}
+void Node_Impl_Scheduler::set_notify_callback(std::function<void()> callback) noexcept
+{
+    auto env = m_obj.Env();
+    return run_blocking_on_main_thread([&]() -> void {
+        auto meth = m_obj.Get("set_notify_callback");
+        if (!meth.IsFunction())
+            throw Napi::TypeError::New(env, "expected a function");
+        auto ret = meth.As<Napi::Function>().MakeCallback(
+            m_obj.Value(),
+            {
+
+                (!(callback) ? env.Null()
+                             : Napi::Function::New(env,
+                                                   [func = std::forward<decltype(callback)>(callback)](
+                                                       const Napi::CallbackInfo& info) -> Napi::Value {
+                                                       auto env = info.Env();
+                                                       if (info.Length() != 0)
+                                                           throw Napi::TypeError::New(env, "expected 0 arguments");
+
+
+                                                       func();
+                                                       return env.Undefined();
+                                                   }))
+
+            });
+        return ((void)ret);
+    });
 }
 void makeNodeEnum_SchemaMode(Napi::Env env, Napi::Object exports)
 {
@@ -1049,8 +1293,36 @@ Napi::Value nodeFrom_RealmConfig(Napi::Env env, const RealmConfig& obj)
                 return out;
             }()))));
     out.Set("schema_version", Napi::Number::New(env, (obj.schema_version)));
-    out.Set("initialization_function", env.Undefined());
-    out.Set("should_compact_on_launch_function", env.Undefined());
+    out.Set("initialization_function",
+            (!((obj.initialization_function))
+                 ? env.Null()
+                 : Napi::Function::New(
+                       env,
+                       [func = std::forward<decltype((obj.initialization_function))>((obj.initialization_function))](
+                           const Napi::CallbackInfo& info) -> Napi::Value {
+                           auto env = info.Env();
+                           if (info.Length() != 1)
+                               throw Napi::TypeError::New(env, "expected 1 arguments");
+
+
+                           func(NODE_TO_SHARED_Realm(info[0]));
+                           return env.Undefined();
+                       })));
+    out.Set("should_compact_on_launch_function",
+            (!((obj.should_compact_on_launch_function))
+                 ? env.Null()
+                 : Napi::Function::New(
+                       env,
+                       [func = std::forward<decltype((obj.should_compact_on_launch_function))>(
+                            (obj.should_compact_on_launch_function))](const Napi::CallbackInfo& info) -> Napi::Value {
+                           auto env = info.Env();
+                           if (info.Length() != 2)
+                               throw Napi::TypeError::New(env, "expected 2 arguments");
+
+                           auto&& val = func(uint64_t(info[0].ToNumber().Int64Value()),
+                                             uint64_t(info[1].ToNumber().Int64Value()));
+                           return Napi::Boolean::New(env, val);
+                       })));
     return out;
 }
 const std::shared_ptr<Transaction>& NODE_TO_SHARED_Transaction(Napi::Value val)
@@ -1077,6 +1349,21 @@ Napi::Value NODE_FROM_SHARED_Realm(Napi::Env env, std::shared_ptr<Realm> ptr)
 {
     return Node_Realm::ctor.New({Napi::External<std::shared_ptr<Realm>>::New(env, &ptr)});
 }
+std::shared_ptr<Scheduler> NODE_TO_INTERFACE_Scheduler(Napi::Value val)
+{
+    // Don't double-wrap if already have a wrapped implementation.
+    if (val.ToObject().InstanceOf(Node_Scheduler::ctor.Value()))
+        return NODE_TO_SHARED_Scheduler(val);
+    return std::make_shared<Node_Impl_Scheduler>(val);
+}
+const std::shared_ptr<Scheduler>& NODE_TO_SHARED_Scheduler(Napi::Value val)
+{
+    return Node_Scheduler::Unwrap(val.ToObject())->m_ptr;
+}
+Napi::Value NODE_FROM_SHARED_Scheduler(Napi::Env env, std::shared_ptr<Scheduler> ptr)
+{
+    return Node_Scheduler::ctor.New({Napi::External<std::shared_ptr<Scheduler>>::New(env, &ptr)});
+}
 Napi::Object moduleInit(Napi::Env env, Napi::Object exports)
 {
     makeNodeEnum_SchemaMode(env, exports);
@@ -1084,6 +1371,7 @@ Napi::Object moduleInit(Napi::Env env, Napi::Object exports)
     Node_Transaction::init(env, exports);
     Node_ObjectStore::init(env, exports);
     Node_Realm::init(env, exports);
+    Node_Scheduler::init(env, exports);
     return exports;
 }
 

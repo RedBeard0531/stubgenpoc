@@ -25,22 +25,31 @@ def yamlFunc(name, func, out_list):
         list, lambda: [yamlFunc(name, f, out_list) for f in func]
      )
 
+def Templ(name, *args):
+    return TemplateInstance(syms.templates[name], list(args))
+
+def Shared(type):
+    return Templ('std::shared_ptr', type)
+
 # Set up syms with all type names
 syms = SymbolTable()
-for name in tree.get('primitives', ()):
-    syms.addType(name, Primitive(name))
 
-for name, cls_raw in tree.get('classes', {}).items():
-    cls = Class(name)
-    syms.classes.append(cls)
-    syms.addType(name, cls)
-
-    if sharedName := cls_raw.get('sharedPtrWrapped'):
-        syms.addType(sharedName, Shared(cls))
-        cls.shared_ptr_wrapped = True
 
 for name in tree.get('templates', ()):
     syms.templates[name] = Template(parseQualName(name))
+
+for name in tree.get('primitives', ()):
+    syms.addType(name, Primitive(name))
+
+for subtree, ctor in (('classes', Class), ('interfaces', Interface)):
+    for name, cls_raw in tree.get(subtree, {}).items():
+        cls = ctor(name)
+        syms.classes.append(cls)
+        syms.addType(name, cls)
+
+        if sharedName := cls_raw.get('sharedPtrWrapped'):
+            syms.addType(sharedName, Shared(cls))
+            cls.shared_ptr_wrapped = True
 
 for subtree, ctor in (('enums', Enum), ('records', Record)):
     for name in tree.get(subtree, ()):
@@ -81,16 +90,17 @@ for rec_name, rec_raw in tree.get('records', {}).items():
             {type: _}, lambda t: Field(name, parse(info['type'], syms), info.get('default')),
         ))
 
-for cls_name, cls_raw in tree.get('classes', {}).items():
-    cls = syms.types[cls_name]
+for subtree in ('classes', 'interfaces'):
+    for cls_name, cls_raw in tree.get(subtree, {}).items():
+        cls = syms.types[cls_name]
 
-    cls.properties = {p: parse(t, syms) for p, t in cls_raw.get('properties', {}).items()}
+        cls.properties = {p: parse(t, syms) for p, t in cls_raw.get('properties', {}).items()}
 
-    for name, func in cls_raw.get('methods', {}).items():
-        yamlFunc(name, func, cls.methods)
+        for name, func in cls_raw.get('methods', {}).items():
+            yamlFunc(name, func, cls.methods)
 
-    for name, func in cls_raw.get('staticMethods', {}).items():
-        yamlFunc(name, func, cls.static_methods)
+        for name, func in cls_raw.get('staticMethods', {}).items():
+            yamlFunc(name, func, cls.static_methods)
 
 
 @dataclass
@@ -121,16 +131,21 @@ class CppFunc:
     body: str = ''
     static: bool = False
     const: bool = False
+    noexcept: bool = False
+    override: bool = False
+
+    def props(self, *names):
+        return ' '.join(self.prop(n) for n in names)
+
+    def prop(self, name):
+        return name if getattr(self, name) else ''
 
     def declaration(self):
-        static = 'static' if self.static else ''
-        const = 'const' if self.const else ''
-        return f'{static} {self.ret} {self.name}({", ".join(a.arg_declaration() for a in self.args)}) {const};'
+        return f'{self.prop("static")} {self.ret} {self.name}({", ".join(a.arg_declaration() for a in self.args)}) {self.props("const", "noexcept", "override")};'
 
     def definition(self):
         # TODO add optional try/catch wrapping
-        const = 'const' if self.const else ''
-        return f'{self.ret} {self.qualName()}({", ".join(a.arg_definition() for a in self.args)}) {const} {{ {self.body} }}'
+        return f'{self.ret} {self.qualName()}({", ".join(a.arg_definition() for a in self.args)}) {self.props("const", "noexcept")} {{ {self.body} }}'
 
     def qualName(self): return self.name
 
@@ -145,6 +160,7 @@ class CppMemInit:
 @dataclass
 class CppMethod(CppFunc):
     on: Any = None
+
     def qualName(self): return f'{self.on.name}::{self.name}'
 
 
@@ -172,6 +188,7 @@ class CppClass:
         self.methods = []
         self.members = []
         self.bases = []
+        classes.append(self)
 
     def addMethod(self, meth):
         meth.on = self
@@ -203,8 +220,6 @@ free_vars = []
 classes = []
 inits = []
 
-
-def Templ(name, *args): return TemplateInstance(syms.templates[name], list(args))
 
 for enum in syms.enums:
     free_vars.append(CppVar(
@@ -313,7 +328,20 @@ def convertToNode(type, expr):
             }}())
         ''',
 
-        FuncSig(_, _), lambda ret, args: 'env.Undefined()', # TODO? convert std::function to node function
+        FuncSig(_, _), lambda ret, args: f'''
+            (!({expr}) ? env.Null() : Napi::Function::New(
+                env,
+                [func = std::forward<decltype({expr})>({expr})] (const Napi::CallbackInfo& info) -> Napi::Value {{
+                    auto env = info.Env();
+                    if (info.Length() != {len(args)})
+                        throw Napi::TypeError::New(env, "expected {len(args)} arguments");
+
+                    {'auto&& val = ' if ret != Primitive('void') else ''}
+                        func({', '.join(convertFromNode(arg.type, f'info[{i}]') for i, arg in enumerate(args))});
+                    return {convertToNode(ret, 'val')};
+                }}
+            ))
+        ''',
 
         Shared(_), lambda type: f"NODE_FROM_SHARED_{type.name}(env, {expr})",
 
@@ -360,6 +388,7 @@ def cppType(type):
         Const(_), lambda type: c(type) + ' const',
         Ref(_), lambda type: c(type) + '&',
         RRef(_), lambda type: c(type) + 'R&',
+        FuncSig(_, _), lambda ret, args: f'std::function<{c(ret)}({", ".join(c(a) for a in args)})>',
         TemplateInstance(Template(QualName(_)), _), lambda tmpl, args: f"{'::'.join(tmpl)}<{','.join(c(a) for a in args)}>",
     )
 
@@ -407,9 +436,10 @@ def convertFromNode(type, expr):
         ''',
 
 
+        Shared(Interface), lambda type: f"NODE_TO_INTERFACE_{type.name}({expr})",
         Shared(_), lambda type: f"NODE_TO_SHARED_{type.name}({expr})",
 
-        Class, lambda: f"NODE_TO_CLASS_{type.name}({expr})",
+        Class, lambda: f"*{c(Shared(type), expr)}" if type.shared_ptr_wrapped else f"NODE_TO_CLASS_{type.name}({expr})",
 
         Opaque(_), lambda name: f'*({expr}.As<Napi::External<{name}>>().Data())',
 
@@ -460,7 +490,6 @@ for rec in syms.records:
 for cls in syms.classes:
     # TODO map name styles from core-cpp to js
     cpp_cls = CppClass(f'Node_{cls.name}')
-    classes.append(cpp_cls)
     cpp_cls.bases.append(f'Napi::ObjectWrap<{cpp_cls.name}>')
     cpp_cls.members.append(CppVar('Napi::FunctionReference', 'ctor', static=True))
 
@@ -522,6 +551,51 @@ for cls in syms.classes:
         ptr = f'std::shared_ptr<{cls.name}>'
         cpp_cls.members.append(CppVar(ptr, 'm_ptr'))
         ctor.body += f'm_ptr = std::move(*info[0].As<Napi::External<{ptr}>>().Data());'
+
+        if (isinstance(cls, Interface)):
+            impl = CppClass(f'Node_Impl_{cls.name}')
+            impl.bases.append(cls.name)
+            impl.members.append(CppVar('Napi::ObjectReference', 'm_obj'))
+
+            impl.addMethod(CppCtor(impl.name, '', [CppVar('Napi::Value', 'val')],
+                                   mem_inits = [CppMemInit(f'm_obj', 'Napi::Persistent(val.ToObject())')]))
+
+            for method in cls.methods:
+                impl.addMethod(CppMethod(
+                    method.name,
+                    cppType(method.type.ret),
+                    [CppVar(cppType(a.type), a.name) for a in method.type.args],
+                    const = method.type.const,
+                    noexcept = method.type.noexcept,
+                    override = True,
+                    body = dedent(f'''
+                        auto env = m_obj.Env();
+                        return run_blocking_on_main_thread([&] () -> {cppType(method.type.ret)} {{
+                            auto meth = m_obj.Get("{method.unique_name}");
+                            if (!meth.IsFunction())
+                                throw Napi::TypeError::New(env, "expected a function");
+                            auto ret = meth.As<Napi::Function>().MakeCallback(
+                                m_obj.Value(),
+                                {{
+                                    {', '.join(f'{convertToNode(a.type, a.name)}' for a in method.type.args)}
+                                }});
+                            return {convertFromNode(method.type.ret, 'ret')};
+                        }});
+                    ''')))
+
+
+            free_funcs.append(CppFunc(
+                f'NODE_TO_INTERFACE_{cls.name}',
+                ptr,
+                [CppVar('Napi::Value', 'val')],
+                body = dedent(f'''
+                    // Don't double-wrap if already have a wrapped implementation.
+                    if (val.ToObject().InstanceOf({cpp_cls.name}::ctor.Value()))
+                        return NODE_TO_SHARED_{cls.name}(val);
+                    return std::make_shared<{impl.name}>(val);
+                '''),
+            ))
+
 
         free_funcs.append(CppFunc(
             f'NODE_TO_SHARED_{cls.name}',
@@ -600,8 +674,9 @@ for header in needed_headers:
 
 print('namespace realm::js::node {')
 
-#TODO hacks...
+#TODO hacks, because we don't yet support defining types with QualName
 print('using RealmConfig = Realm::Config;')
+print('using Scheduler = util::Scheduler;')
 
 
 #TODO move to support header file or something.

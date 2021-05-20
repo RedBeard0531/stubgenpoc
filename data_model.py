@@ -129,6 +129,7 @@ class FuncSig:
     ret: Type
     args: List[Arg]
     const: bool = False
+    noexcept: bool = False
 
     def visitTypes(self, visitor):
         visitor(self.ret)
@@ -160,13 +161,6 @@ class Method:
     def visitTypes(self, visitor):
         visitor(self.type)
 
-
-@dataclass
-class Shared(WrapperType):
-    type: Type
-
-    def __str__(self): return f'shared_ptr<{self.type}>'
-
 @dataclass
 class Class:
     name: str # TODO qual?
@@ -179,6 +173,11 @@ class Class:
         for p in self.properties.values(): visitor(p)
         for m in self.static_methods: visitor(m)
         for m in self.methods: visitor(m)
+
+@dataclass
+class Interface(Class):
+    shared_ptr_wrapped: bool = True
+    pass
 
 @dataclass
 class Enumerator:

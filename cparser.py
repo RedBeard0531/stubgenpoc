@@ -276,13 +276,14 @@ def parseSig(toks: TokCursor, syms):
             assert toks.consume(OP(','))
 
     is_const = toks.try_consume(IDENT('const')) is not None
+    is_noexcept = toks.try_consume(IDENT('noexcept')) is not None
 
     if toks.try_consume(OP('->')):
         ret = parseType(toks, syms)
     else:
         ret = syms.types[parseQualName('void')]
 
-    return FuncSig(ret, args, is_const)
+    return FuncSig(ret, args, is_const, is_noexcept)
 
 def parse(toks: Union[TokCursor, str, List[Token]], syms):
     if (not isinstance(toks, TokCursor)):
